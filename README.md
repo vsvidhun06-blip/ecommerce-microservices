@@ -2,6 +2,53 @@
 
 A cloud-native e-commerce backend built with Spring Boot microservices architecture, featuring JWT authentication, PostgreSQL databases, and Docker containerization.
 
+## Quick Start (Verified)
+
+The entire stack runs via the root `docker-compose.yml`. No per-service Maven runs needed.
+
+### Prerequisites
+- Docker Desktop running (tested with engine v28.5.1, Compose v2.40.3)
+- Host ports free: **5432, 5433, 5434, 5435** (Postgres × 4), **6379** (Redis), **8080–8084** (services). If any of these are bound by other containers, stop them first.
+- ~2 GB free disk for images; first build downloads Maven dependencies for 5 services (~5 min cold).
+
+### Run
+```bash
+git clone https://github.com/vsvidhun06-blip/ecommerce-microservices.git
+cd ecommerce-microservices
+docker compose up --build
+```
+
+### What you should see
+After the build completes, 10 containers come up: 4 Postgres DBs, Redis, and 5 Spring Boot services. Wait ~30 s for the services to finish booting, then:
+
+| Port | Service | Health endpoint | Expected |
+|---:|---|---|---|
+| 8080 | api-gateway | `GET /actuator/health` | **200** `{"status":"UP"}` |
+| 8081 | product-service | `GET /actuator/health` | **200** `{"status":"UP"}` |
+| 8082 | user-service | `GET /actuator/health` | **200** `{"status":"UP"}` |
+| 8083 | order-service | `GET /actuator/health` | **200** `{"status":"UP"}` |
+| 8084 | notification-service | `GET /actuator/health` | **200** `{"status":"UP"}` |
+
+Verify all five:
+```bash
+curl http://localhost:8080/actuator/health
+curl http://localhost:8081/actuator/health
+curl http://localhost:8082/actuator/health
+curl http://localhost:8083/actuator/health
+curl http://localhost:8084/actuator/health
+```
+
+### Known caveats (not blocking startup)
+- **No Kafka / no Eureka** in `docker-compose.yml`. The `notification-service` source has a `@KafkaListener` and points at `localhost:9092`; it logs repeated `Bootstrap broker ... disconnected` warnings but the container stays healthy. The `infrastructure/docker-compose.yml` is a separate scaffold (not used by the root compose) and includes Kafka+Zookeeper if you want to wire it up.
+- **api-gateway routes** in `application.properties` point at `localhost:<port>`. Inside the Docker network, `localhost` is the container itself, so proxied requests through the gateway won't reach the backend services. Hit each service directly on its host port instead.
+- The `infrastructure/` directory contains an older Compose scaffold. The root `docker-compose.yml` is the one that runs the project.
+
+### Stopping
+```bash
+docker compose down            # stops and removes containers, keeps volumes
+docker compose down -v         # also removes the Postgres volumes
+```
+
 ##  Architecture
 ```
 CLIENT
@@ -30,7 +77,7 @@ API Gateway (Port 8080)
 | Category | Technology |
 |----------|-----------|
 | Language | Java 17 |
-| Framework | Spring Boot 4.0.2 |
+| Framework | Spring Boot 3.2.0 |
 | Security | Spring Security + JWT |
 | Database | PostgreSQL 15 |
 | Containers | Docker |
@@ -45,7 +92,9 @@ API Gateway (Port 8080)
 - Maven 3.8+
 - PostgreSQL (via Docker)
 
-## 🚀 Getting Started
+## 🚀 Getting Started (legacy manual setup)
+
+> Prefer the **Quick Start** section at the top of this README — it runs everything via `docker compose up`. The steps below are the legacy per-service manual workflow.
 
 ### 1. Clone the Repository
 ```bash

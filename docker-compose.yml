@@ -102,6 +102,7 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://product-db:5432/product_db
       SPRING_DATASOURCE_USERNAME: postgres
       SPRING_DATASOURCE_PASSWORD: postgres
+      SERVER_PORT: 8081
     depends_on:
       product-db:
         condition: service_healthy
@@ -155,6 +156,7 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://notification-db:5432/notification_db
       SPRING_DATASOURCE_USERNAME: postgres
       SPRING_DATASOURCE_PASSWORD: postgres
+      SERVER_PORT: 8084
     depends_on:
       notification-db:
         condition: service_healthy
