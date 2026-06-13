@@ -11,6 +11,7 @@ import org.springframework.kafka.config.TopicBuilder;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaOperations;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.util.backoff.FixedBackOff;
@@ -55,6 +56,23 @@ public class KafkaDlqConfig {
         props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
         props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class);
         return new KafkaTemplate<>(new DefaultKafkaProducerFactory<>(props));
+    }
+
+    /**
+     * The JSON publishing template used by the Saga producer and the recoverer.
+     *
+     * Spring Boot auto-configures exactly this {@code KafkaTemplate<String, Object>}
+     * from {@code spring.kafka.producer.*}, but its bean is
+     * {@code @ConditionalOnMissingBean(KafkaTemplate.class)} — a condition that
+     * matches the <em>raw</em> type, ignoring generics. {@link #rawValueKafkaTemplate()}
+     * above is a {@code KafkaTemplate}, so it silently suppresses the auto-configured
+     * default and leaves every {@code KafkaTemplate<String, Object>} injection point
+     * (OrderService, OrderSagaHandler, the recoverer below) unsatisfied. Declare it
+     * explicitly over the still-auto-configured producer factory to restore it.
+     */
+    @Bean
+    public KafkaTemplate<String, Object> kafkaTemplate(ProducerFactory<String, Object> producerFactory) {
+        return new KafkaTemplate<>(producerFactory);
     }
 
     @Bean

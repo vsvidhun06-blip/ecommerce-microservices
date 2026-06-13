@@ -33,6 +33,10 @@ public class Order {
     @Column(nullable = false)
     private OrderStatus status = OrderStatus.PENDING;
 
+    // @Builder.Default: without it Lombok's @Builder ignores this field
+    // initializer, so Order.builder().build() leaves items null and
+    // order.getItems().add(...) NPEs during order creation.
+    @Builder.Default
     @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<OrderItem> items = new ArrayList<>();
 
