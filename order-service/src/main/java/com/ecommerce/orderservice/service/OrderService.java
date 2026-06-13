@@ -1,19 +1,25 @@
 package com.ecommerce.orderservice.service;
 
+import com.ecommerce.orderservice.config.KafkaTopics;
 import com.ecommerce.orderservice.dto.CreateOrderRequest;
 import com.ecommerce.orderservice.dto.OrderItemRequest;
 import com.ecommerce.orderservice.dto.OrderResponse;
+import com.ecommerce.orderservice.event.OrderCancelledEvent;
+import com.ecommerce.orderservice.event.OrderCreatedEvent;
+import com.ecommerce.orderservice.event.OrderLineItem;
 import com.ecommerce.orderservice.exception.OrderNotFoundException;
 import com.ecommerce.orderservice.model.Order;
 import com.ecommerce.orderservice.model.OrderItem;
 import com.ecommerce.orderservice.repository.OrderRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestTemplate;
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 @Service
@@ -22,6 +28,7 @@ import java.util.stream.Collectors;
 public class OrderService {
 
     private final OrderRepository orderRepository;
+    private final KafkaTemplate<String, Object> kafkaTemplate;
     private final RestTemplate restTemplate = new RestTemplate();
 
     private static final String PRODUCT_SERVICE_URL = "http://localhost:8081/api/v1/products";
@@ -67,8 +74,70 @@ public class OrderService {
         order.setTotalAmount(totalAmount);
         Order savedOrder = orderRepository.save(order);
 
-        log.info("Order created successfully with ID: {}", savedOrder.getId());
+        log.info("Order created successfully with ID: {} (PENDING)", savedOrder.getId());
+
+        // Saga step 1: announce the PENDING order so inventory reserves stock.
+        // The order stays PENDING until INVENTORY_RESERVED / INVENTORY_FAILED
+        // drives it to CONFIRMED / CANCELLED (see OrderSagaHandler).
+        publishOrderCreated(savedOrder);
+
         return OrderResponse.fromOrder(savedOrder);
+    }
+
+    /**
+     * Saga callback: stock was reserved -> confirm the order.
+     *
+     * Idempotent: only a PENDING order transitions, so a duplicate
+     * INVENTORY_RESERVED delivery is a no-op.
+     */
+    @Transactional
+    public void markConfirmed(Long orderId) {
+        Order order = orderRepository.findById(orderId).orElse(null);
+        if (order == null) {
+            log.warn("[saga] INVENTORY_RESERVED for unknown order {}; ignoring", orderId);
+            return;
+        }
+        if (order.getStatus() != Order.OrderStatus.PENDING) {
+            log.info("[saga] order {} already {}; confirm is a no-op", orderId, order.getStatus());
+            return;
+        }
+        order.setStatus(Order.OrderStatus.CONFIRMED);
+        orderRepository.save(order);
+        log.info("[saga] order {} CONFIRMED", orderId);
+    }
+
+    /**
+     * Saga callback: stock could not be reserved -> cancel the order.
+     *
+     * Terminal failure of the forward flow; no compensation event is published
+     * because the inventory service never held a reservation. Idempotent: only
+     * a PENDING order transitions.
+     */
+    @Transactional
+    public void failOrder(Long orderId, String reason) {
+        Order order = orderRepository.findById(orderId).orElse(null);
+        if (order == null) {
+            log.warn("[saga] INVENTORY_FAILED for unknown order {}; ignoring", orderId);
+            return;
+        }
+        if (order.getStatus() != Order.OrderStatus.PENDING) {
+            log.info("[saga] order {} already {}; cancel is a no-op", orderId, order.getStatus());
+            return;
+        }
+        order.setStatus(Order.OrderStatus.CANCELLED);
+        orderRepository.save(order);
+        log.warn("[saga] order {} CANCELLED (inventory failed: {})", orderId, reason);
+    }
+
+    private void publishOrderCreated(Order order) {
+        List<OrderLineItem> lines = order.getItems().stream()
+                .map(i -> new OrderLineItem(i.getProductId(), i.getQuantity()))
+                .collect(Collectors.toList());
+        OrderCreatedEvent event = new OrderCreatedEvent(
+                UUID.randomUUID().toString(), order.getId(), order.getUserId(), lines);
+        kafkaTemplate.send(KafkaTopics.ORDER_CREATED, order.getId().toString(), event);
+        log.info("[saga] published ORDER_CREATED for order {} ({} lines)",
+                order.getId(), lines.size());
     }
 
     public OrderResponse getOrderById(Long id) {
@@ -94,11 +163,27 @@ public class OrderService {
         Order order = orderRepository.findById(id)
                 .orElseThrow(() -> new OrderNotFoundException("Order not found with id: " + id));
 
+        Order.OrderStatus previous = order.getStatus();
         order.setStatus(status);
         Order updatedOrder = orderRepository.save(order);
+        log.info("Order status updated from {} to {} for order ID: {}", previous, status, id);
 
-        log.info("Order status updated to {} for order ID: {}", status, id);
+        // Saga compensation: a user/admin cancelling an order that may hold a
+        // reservation must tell inventory to release it. Inventory's handler is
+        // idempotent and no-ops when no reservation is held, so it is safe to
+        // emit on any transition into CANCELLED from a live state.
+        if (status == Order.OrderStatus.CANCELLED && previous != Order.OrderStatus.CANCELLED) {
+            publishOrderCancelled(order, "Cancelled via status update");
+        }
+
         return OrderResponse.fromOrder(updatedOrder);
+    }
+
+    private void publishOrderCancelled(Order order, String reason) {
+        OrderCancelledEvent event = new OrderCancelledEvent(
+                UUID.randomUUID().toString(), order.getId(), reason);
+        kafkaTemplate.send(KafkaTopics.ORDER_CANCELLED, order.getId().toString(), event);
+        log.info("[saga] published ORDER_CANCELLED for order {} (compensation)", order.getId());
     }
 
     @Transactional
