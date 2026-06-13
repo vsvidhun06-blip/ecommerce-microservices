@@ -10,6 +10,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.listener.CommonErrorHandler;
 import org.springframework.kafka.support.serializer.ErrorHandlingDeserializer;
 import org.springframework.kafka.support.serializer.JsonDeserializer;
 
@@ -56,20 +57,25 @@ public class OrderKafkaConfig {
                 new ErrorHandlingDeserializer<>(jsonDeserializer));
     }
 
-    private <T> ConcurrentKafkaListenerContainerFactory<String, T> listenerFactory(Class<T> type) {
+    private <T> ConcurrentKafkaListenerContainerFactory<String, T> listenerFactory(
+            Class<T> type, CommonErrorHandler errorHandler) {
         ConcurrentKafkaListenerContainerFactory<String, T> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(typedConsumerFactory(type));
+        // Bounded in-process retries, then dead-letter to <topic>.DLT.
+        factory.setCommonErrorHandler(errorHandler);
         return factory;
     }
 
     @Bean
-    public ConcurrentKafkaListenerContainerFactory<String, InventoryReservedEvent> inventoryReservedListenerFactory() {
-        return listenerFactory(InventoryReservedEvent.class);
+    public ConcurrentKafkaListenerContainerFactory<String, InventoryReservedEvent> inventoryReservedListenerFactory(
+            CommonErrorHandler kafkaErrorHandler) {
+        return listenerFactory(InventoryReservedEvent.class, kafkaErrorHandler);
     }
 
     @Bean
-    public ConcurrentKafkaListenerContainerFactory<String, InventoryFailedEvent> inventoryFailedListenerFactory() {
-        return listenerFactory(InventoryFailedEvent.class);
+    public ConcurrentKafkaListenerContainerFactory<String, InventoryFailedEvent> inventoryFailedListenerFactory(
+            CommonErrorHandler kafkaErrorHandler) {
+        return listenerFactory(InventoryFailedEvent.class, kafkaErrorHandler);
     }
 }
