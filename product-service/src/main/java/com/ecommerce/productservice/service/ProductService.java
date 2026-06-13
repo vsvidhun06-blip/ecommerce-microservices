@@ -19,16 +19,20 @@ public class ProductService {
     private static final Logger log = LoggerFactory.getLogger(ProductService.class);
     private final ProductRepository productRepository;
     private final KafkaTemplate<String, Object> kafkaTemplate;
+    private final ProductCacheService productCache;
 
     public ProductService(ProductRepository productRepository,
-                          KafkaTemplate<String, Object> kafkaTemplate) {
+                          KafkaTemplate<String, Object> kafkaTemplate,
+                          ProductCacheService productCache) {
         this.productRepository = productRepository;
         this.kafkaTemplate = kafkaTemplate;
+        this.productCache = productCache;
     }
 
     public Product createProduct(Product product) {
         Product savedProduct = productRepository.save(product);
         log.info("✅ Product created: ID={}, Name={}", savedProduct.getId(), savedProduct.getName());
+        productCache.put(savedProduct);
 
         // Publish event
         ProductCreatedEvent event = new ProductCreatedEvent(
@@ -55,8 +59,10 @@ public class ProductService {
     }
 
     public Product getProductById(Long id) {
-        return productRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Product not found with id: " + id));
+        // Cache-aside: serve from Redis on a hit; on a miss, a single holder
+        // (distributed lock) loads from the DB and repopulates the cache.
+        return productCache.getOrLoad(id, () -> productRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("Product not found with id: " + id)));
     }
 
     public List<Product> getProductsByCategory(String category) {
@@ -68,7 +74,9 @@ public class ProductService {
     }
 
     public Product updateProduct(Long id, Product updatedProduct) {
-        Product existingProduct = getProductById(id);
+        // Mutations operate on the managed JPA entity (not a cached copy).
+        Product existingProduct = productRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("Product not found with id: " + id));
 
         existingProduct.setName(updatedProduct.getName());
         existingProduct.setDescription(updatedProduct.getDescription());
@@ -79,6 +87,7 @@ public class ProductService {
         existingProduct.setImageUrl(updatedProduct.getImageUrl());
 
         Product saved = productRepository.save(existingProduct);
+        productCache.put(saved);
         log.info("✅ Product updated: ID={}", id);
 
         // Publish event
@@ -101,13 +110,16 @@ public class ProductService {
             throw new RuntimeException("Product not found with id: " + id);
         }
         productRepository.deleteById(id);
+        productCache.evict(id);
         log.info("🗑️ Product deleted: ID={}", id);
     }
 
     public void updateStock(Long productId, Integer quantity) {
-        Product product = getProductById(productId);
+        Product product = productRepository.findById(productId)
+                .orElseThrow(() -> new RuntimeException("Product not found with id: " + productId));
         product.setStockQuantity(quantity);
-        productRepository.save(product);
+        Product saved = productRepository.save(product);
+        productCache.put(saved);
         log.info("📦 Stock updated for product ID {}: new quantity = {}", productId, quantity);
     }
 }
