@@ -1,9 +1,11 @@
 package com.ecommerce.orderservice.service;
 
+import com.ecommerce.orderservice.client.ProductClient;
 import com.ecommerce.orderservice.config.KafkaTopics;
 import com.ecommerce.orderservice.dto.CreateOrderRequest;
 import com.ecommerce.orderservice.dto.OrderItemRequest;
 import com.ecommerce.orderservice.dto.OrderResponse;
+import com.ecommerce.orderservice.dto.ProductDTO;
 import com.ecommerce.orderservice.event.OrderCancelledEvent;
 import com.ecommerce.orderservice.event.OrderCreatedEvent;
 import com.ecommerce.orderservice.event.OrderLineItem;
@@ -16,10 +18,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.client.RestTemplate;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletionException;
 import java.util.stream.Collectors;
 
 @Service
@@ -29,9 +31,7 @@ public class OrderService {
 
     private final OrderRepository orderRepository;
     private final KafkaTemplate<String, Object> kafkaTemplate;
-    private final RestTemplate restTemplate = new RestTemplate();
-
-    private static final String PRODUCT_SERVICE_URL = "http://localhost:8081/api/v1/products";
+    private final ProductClient productClient;
 
     @Transactional
     public OrderResponse createOrder(CreateOrderRequest request) {
@@ -45,30 +45,35 @@ public class OrderService {
                 .build();
 
         for (OrderItemRequest itemRequest : request.getItems()) {
-            // Fetch product details from Product Service
+            // Fetch product details from the product service, isolated behind a
+            // thread-pool bulkhead (see ProductClient). join() unwraps the
+            // bulkhead's future; a rejection/failure arrives as CompletionException.
+            ProductDTO product;
             try {
-                ProductDTO product = restTemplate.getForObject(
-                        PRODUCT_SERVICE_URL + "/" + itemRequest.getProductId(),
-                        ProductDTO.class
-                );
+                product = productClient.getProduct(itemRequest.getProductId()).join();
+            } catch (CompletionException e) {
+                Throwable cause = e.getCause() != null ? e.getCause() : e;
+                log.error("Failed to fetch product details for product ID: {}",
+                        itemRequest.getProductId(), cause);
+                throw new RuntimeException("Product lookup failed for product "
+                        + itemRequest.getProductId() + ": " + cause.getMessage(), cause);
+            }
 
-                if (product != null) {
-                    BigDecimal itemTotal = product.getPrice().multiply(BigDecimal.valueOf(itemRequest.getQuantity()));
-                    totalAmount = totalAmount.add(itemTotal);
-
-                    OrderItem orderItem = OrderItem.builder()
-                            .order(order)
-                            .productId(itemRequest.getProductId())
-                            .quantity(itemRequest.getQuantity())
-                            .price(product.getPrice())
-                            .build();
-
-                    order.getItems().add(orderItem);
-                }
-            } catch (Exception e) {
-                log.error("Failed to fetch product details for product ID: {}", itemRequest.getProductId(), e);
+            if (product == null) {
                 throw new RuntimeException("Product not found: " + itemRequest.getProductId());
             }
+
+            BigDecimal itemTotal = product.getPrice().multiply(BigDecimal.valueOf(itemRequest.getQuantity()));
+            totalAmount = totalAmount.add(itemTotal);
+
+            OrderItem orderItem = OrderItem.builder()
+                    .order(order)
+                    .productId(itemRequest.getProductId())
+                    .quantity(itemRequest.getQuantity())
+                    .price(product.getPrice())
+                    .build();
+
+            order.getItems().add(orderItem);
         }
 
         order.setTotalAmount(totalAmount);
@@ -193,27 +198,5 @@ public class OrderService {
 
         orderRepository.delete(order);
         log.info("Order deleted with ID: {}", id);
-    }
-
-    // Inner DTO class for Product Service response
-    private static class ProductDTO {
-        private Long id;
-        private String name;
-        private BigDecimal price;
-        private Integer stockQuantity;
-
-        public ProductDTO() {}
-
-        public Long getId() { return id; }
-        public void setId(Long id) { this.id = id; }
-
-        public String getName() { return name; }
-        public void setName(String name) { this.name = name; }
-
-        public BigDecimal getPrice() { return price; }
-        public void setPrice(BigDecimal price) { this.price = price; }
-
-        public Integer getStockQuantity() { return stockQuantity; }
-        public void setStockQuantity(Integer stockQuantity) { this.stockQuantity = stockQuantity; }
     }
 }

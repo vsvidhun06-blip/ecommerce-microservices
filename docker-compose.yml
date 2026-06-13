@@ -273,8 +273,9 @@ services:
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: http://eureka-server:8761/eureka/
       MANAGEMENT_ZIPKIN_TRACING_ENDPOINT: http://zipkin:9411/api/v2/spans
-      PRODUCT_SERVICE_URL: http://product-service:8081
-      INVENTORY_SERVICE_URL: http://inventory-service:8085
+      # Resolved via Spring Cloud LoadBalancer against Eureka (logical id).
+      PRODUCT_SERVICE_URL: lb://product-service
+      INVENTORY_SERVICE_URL: lb://inventory-service
     depends_on:
       order-db:
         condition: service_healthy

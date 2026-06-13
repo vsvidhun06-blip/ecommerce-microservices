@@ -29,6 +29,7 @@
 	<properties>
 		<java.version>17</java.version>
 		<spring-cloud.version>2023.0.0</spring-cloud.version>
+		<resilience4j.version>2.2.0</resilience4j.version>
 	</properties>
 	<dependencies>
 		<dependency>
@@ -41,10 +42,21 @@
 			<groupId>org.springframework.kafka</groupId>
 			<artifactId>spring-kafka</artifactId>
 		</dependency>
-		<!-- Register with Eureka so the gateway can route via lb://order-service. -->
+		<!-- Register with Eureka so the gateway can route via lb://order-service,
+		     and so this service can resolve lb://product-service via Spring Cloud
+		     LoadBalancer (pulled in transitively by the eureka-client starter). -->
 		<dependency>
 			<groupId>org.springframework.cloud</groupId>
 			<artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+		</dependency>
+		<!-- Phase 3 resilience: bulkhead isolation + tuned thread pool around the
+		     synchronous product-service call. resilience4j-spring-boot3 brings the
+		     AOP aspects (@Bulkhead) and properties-based instance config; it is not
+		     managed by the spring-cloud BOM, so the version is pinned explicitly. -->
+		<dependency>
+			<groupId>io.github.resilience4j</groupId>
+			<artifactId>resilience4j-spring-boot3</artifactId>
+			<version>${resilience4j.version}</version>
 		</dependency>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
